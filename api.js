@@ -3,31 +3,28 @@ const router = express.Router();
 const slugify = require('slugify');
 const NodeCache = require('node-cache');
 const appCache = new NodeCache({ stdTTL: 3600 });
-const axios = require('axios'); // <--- TAMBAHAN 1: Import Axios
+const axios = require('axios');
 const ITEMS_PER_PAGE = 20;
 
 const Anime = require('./models/Anime');
 const Episode = require('./models/Episode');
 
-// --- HELPER SCRAPER (INTEGRASI DARI PLAYER.JS) ---
-// Fungsi ini bertugas mengambil source code dan mencari URL .m3u8
+// --- HELPER FUNCTIONS ---
+
+// Helper Scraper (Integrasi dari player.js)
 async function scrapeSaitou(url) {
   try {
-    // Header agar request terlihat seperti browser asli
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
       'Referer': 'https://saitou.my.id/', 
     };
 
-    const response = await axios.get(url, { headers, timeout: 5000 }); // Timeout 5 detik biar ga hanging
+    const response = await axios.get(url, { headers, timeout: 5000 });
     const html = response.data;
-
-    // Regex untuk mencari "file":"https://..." di dalam config player
     const regex = /"file"\s*:\s*"([^"]+)"/;
     const match = html.match(regex);
 
     if (match && match[1]) {
-      // Bersihkan URL (Hapus backslashes "\" escape character JSON)
       let videoUrl = match[1].replace(/\\\//g, '/');
       return { success: true, url: videoUrl, type: 'hls' };
     } else {
@@ -46,30 +43,21 @@ const encodeAnimeSlugs = (animes) => {
   }));
 };
 
-// --- ROUTE BARU: EXTRACT STREAM ---
-// Frontend akan memanggil ini: /api/extract?url=https://saitou.my.id/embed/...
+// --- ROUTE: EXTRACT STREAM ---
 router.get('/extract', async (req, res) => {
   try {
     const targetUrl = req.query.url;
-    
-    if (!targetUrl) {
-      return res.status(400).json({ success: false, message: 'URL parameter is required' });
-    }
+    if (!targetUrl) return res.status(400).json({ success: false, message: 'URL parameter is required' });
 
-    // Cek apakah URL ini adalah target scraper kita (Saitou)
     if (targetUrl.includes('saitou.my.id') || targetUrl.includes('embed')) {
       const result = await scrapeSaitou(targetUrl);
-      
       if (result.success) {
         return res.status(200).json({ success: true, data: result });
       } else {
         return res.status(422).json({ success: false, message: 'Failed to extract video', debug: result.message });
       }
     }
-
-    // Jika URL bukan target scraper (misal file MP4 langsung), kembalikan apa adanya
     return res.status(200).json({ success: true, data: { url: targetUrl, type: 'direct' } });
-
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
@@ -81,20 +69,40 @@ router.get('/home', async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const skip = (page - 1) * ITEMS_PER_PAGE;
 
-    const [episodes, totalCount, latestSeries] = await Promise.all([
+    // Fetch episodes and latest series
+    const [episodesRaw, totalCount, latestSeries] = await Promise.all([
       Episode.find().sort({ updatedAt: -1 }).skip(skip).limit(20).lean(),
       Episode.countDocuments(),
       Anime.find().sort({ createdAt: -1 }).limit(20).select('pageSlug imageUrl title info.Type info.Released info.Status').lean()
     ]);
 
-    const formattedEpisodes = episodes.map(ep => ({
-      watchUrl: `/watch${ep.episodeSlug}`, 
-      title: ep.title,
-      imageUrl: ep.animeImageUrl || '/images/default.jpg',
-      quality: '720p',
-      year: new Date(ep.updatedAt || ep.createdAt).getFullYear().toString(),
-      createdAt: ep.updatedAt || ep.createdAt
-    }));
+    // MANUALLY FETCH ANIME IMAGES based on animeSlug
+    // 1. Get list of unique animeSlugs from the episodes
+    const animeSlugs = [...new Set(episodesRaw.map(ep => ep.animeSlug).filter(Boolean))];
+    
+    // 2. Fetch only the imageUrls for those slugs
+    const animeImages = await Anime.find({ pageSlug: { $in: animeSlugs } })
+      .select('pageSlug imageUrl')
+      .lean();
+
+    // 3. Create a map for quick lookup: { "slug": "imageUrl" }
+    const imageMap = {};
+    animeImages.forEach(a => { imageMap[a.pageSlug] = a.imageUrl; });
+
+    // 4. Map episodes merging data
+    const formattedEpisodes = episodesRaw.map(ep => {
+        // Prioritize image from the Anime model lookup, fall back to episode's animeImageUrl
+        const finalImageUrl = imageMap[ep.animeSlug] || ep.animeImageUrl || '/images/default.jpg';
+        
+        return {
+          watchUrl: `/watch${ep.episodeSlug}`, 
+          title: ep.title,
+          imageUrl: finalImageUrl,
+          quality: '720p', // Default placeholder
+          year: new Date(ep.updatedAt || ep.createdAt).getFullYear().toString(),
+          createdAt: ep.updatedAt || ep.createdAt
+        };
+    });
 
     res.status(200).json({
       success: true,
@@ -129,20 +137,18 @@ router.get('/search', async (req, res) => {
   try {
     const q = req.query.q;
     const page = parseInt(req.query.page) || 1;
-    const limit = ITEMS_PER_PAGE; // Pastikan konstanta ini ada
+    const limit = ITEMS_PER_PAGE;
     const skip = (page - 1) * limit;
 
     if (!q) return res.status(400).json({ success: false, message: 'Query parameter "q" is required' });
     
-    // Gunakan regex untuk pencarian (Case Insensitive)
     const query = { title: { $regex: new RegExp(q, 'i') } };
 
     const [animes, totalCount] = await Promise.all([
       Anime.find(query)
-        .sort({ createdAt: -1 }) // Urutkan dari yang terbaru
+        .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        // UPDATE: Pilih field penting untuk AnimeCard (Status, Type, Released)
         .select('title pageSlug imageUrl info.Status info.Type info.Released rating viewCount') 
         .lean(),
       Anime.countDocuments(query)
@@ -163,21 +169,19 @@ router.get('/search', async (req, res) => {
   }
 });
 
-// --- GENRE DETAIL (LIST ANIME BY GENRE) ---
+// --- GENRE DETAIL ---
 router.get('/genre/:genreSlug', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = ITEMS_PER_PAGE; // Pastikan konstanta ini ada
+    const limit = ITEMS_PER_PAGE;
     const skip = (page - 1) * limit;
 
-    // Ambil daftar genre dari cache atau DB
     let allGenres = appCache.get('allGenres');
     if (!allGenres) { 
       allGenres = await Anime.distinct('genres'); 
       appCache.set('allGenres', allGenres); 
     }
     
-    // Cari nama genre asli berdasarkan slug URL
     const originalGenre = allGenres.find(g => 
       slugify(g, { lower: true, strict: true }) === req.params.genreSlug
     );
@@ -188,10 +192,9 @@ router.get('/genre/:genreSlug', async (req, res) => {
 
     const [animes, totalCount] = await Promise.all([
       Anime.find(query)
-        .sort({ createdAt: -1 }) // Urutkan dari yang terbaru ditambahkan
+        .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        // UPDATE: Select field penting untuk AnimeCard (Status, Type, Released)
         .select('title pageSlug imageUrl info.Status info.Type info.Released rating viewCount')
         .lean(),
       Anime.countDocuments(query)
@@ -216,7 +219,7 @@ router.get('/genre/:genreSlug', async (req, res) => {
   }
 });
 
-// --- EPISODE DETAIL (NONTON) ---
+// --- WATCH / EPISODE DETAIL ---
 router.get('/watch/:slug', async (req, res) => {
   try {
     const episodeSlug = `/${req.params.slug}`;
@@ -240,7 +243,6 @@ router.get('/watch/:slug', async (req, res) => {
     if (episodeData.streaming) {
       episodeData.streaming = episodeData.streaming.map(s => ({ 
         ...s, 
-        // Kita biarkan Base64, nanti frontend yang decode dan kirim ke /api/extract jika perlu
         url: s.url ? Buffer.from(s.url).toString('base64') : null 
       }));
     }
@@ -317,33 +319,27 @@ router.get('/anime/:slug', async (req, res) => {
   }
 });
 
-
-// --- PROXY ROUTE (SOLUSI CORS) ---
+// --- PROXY ---
 router.get('/proxy', async (req, res) => {
   try {
     const targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send("No URL provided");
 
-    // Tentukan URL Backend kita sendiri untuk rewriting
-    // Ganti port 3000 sesuai port backendmu jika beda
     const myBackendUrl = `${req.protocol}://${req.get('host')}/api/proxy?url=`;
 
-    // Header palsu agar tidak diblokir server asli
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
       'Referer': 'https://saitou.my.id/', 
       'Origin': 'https://saitou.my.id/'
     };
 
-    // Request ke server video asli
     const response = await axios({
       url: targetUrl,
       method: 'GET',
-      responseType: 'stream', // Penting untuk streaming video
+      responseType: 'stream',
       headers: headers
     });
 
-    // Copy header penting dari server asli ke browser kita
     if (response.headers['content-type']) {
       res.setHeader('Content-Type', response.headers['content-type']);
     }
@@ -351,67 +347,44 @@ router.get('/proxy', async (req, res) => {
       res.setHeader('Content-Length', response.headers['content-length']);
     }
 
-    // IZINKAN CORS DI SINI
     res.setHeader('Access-Control-Allow-Origin', '*');
 
-    // LOGIKA KHUSUS M3U8 (REWRITING)
-    // Jika file adalah playlist (m3u8), kita harus mengedit isinya
     const contentType = response.headers['content-type'];
     if (contentType && (contentType.includes('mpegurl') || targetUrl.includes('.m3u8'))) {
-      
-      // Ubah stream jadi string dulu
       let m3u8Content = '';
       response.data.on('data', (chunk) => { m3u8Content += chunk; });
-      
       response.data.on('end', () => {
-        // Regex untuk mencari URL http/https di dalam file m3u8
-        // Dan membungkusnya dengan proxy kita
         const rewrittenContent = m3u8Content.replace(
           /(https?:\/\/[^\s]+)/g, 
           (match) => `${myBackendUrl}${encodeURIComponent(match)}`
         );
-        
-        // Kirim hasil edit ke browser
         res.send(rewrittenContent);
       });
-
     } else {
-      // Jika file video biasa (.ts / .mp4), langsung pipe (alirkan) saja
       response.data.pipe(res);
     }
-
   } catch (error) {
     console.error("Proxy Error:", error.message);
     res.status(500).send("Proxy Error");
   }
 });
 
+// --- GENRES LIST ---
 router.get('/genres', async (req, res) => {
   try {
-    // Cek cache dulu agar tidak membebani database
     let allGenres = appCache.get('allGenres');
-    
     if (!allGenres) { 
-      // Ambil semua genre unik dari database
       allGenres = await Anime.distinct('genres'); 
-      // Urutkan abjad A-Z
       allGenres.sort();
-      // Simpan di cache selama 1 jam
       appCache.set('allGenres', allGenres); 
     }
-
-    res.status(200).json({
-      success: true,
-      data: allGenres
-    });
+    res.status(200).json({ success: true, data: allGenres });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// --- ANIME LIST (DIRECTORY) ---
-// Bisa filter: ?page=1&sort=latest|oldest|az|za&status=Ongoing|Completed
-// --- ANIME LIST (DIRECTORY) ---
+// --- ANIME DIRECTORY ---
 router.get('/animes', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -420,13 +393,11 @@ router.get('/animes', async (req, res) => {
     const limit = ITEMS_PER_PAGE;
     const skip = (page - 1) * limit;
 
-    // Build Query
     let query = {};
     if (status) {
       query['info.Status'] = { $regex: new RegExp(`^${status}$`, 'i') };
     }
 
-    // Tentukan Sorting
     let sortOption = { createdAt: -1 };
     if (sort === 'oldest') sortOption = { createdAt: 1 };
     else if (sort === 'az') sortOption = { title: 1 };
@@ -438,7 +409,6 @@ router.get('/animes', async (req, res) => {
         .sort(sortOption)
         .skip(skip)
         .limit(limit)
-        // UPDATE: Tambahkan 'info.Released' agar tahun rilis muncul di frontend
         .select('title pageSlug imageUrl info.Status info.Type info.Released rating viewCount') 
         .lean(),
       Anime.countDocuments(query)
@@ -454,45 +424,44 @@ router.get('/animes', async (req, res) => {
         hasNextPage: page < Math.ceil(totalCount / limit)
       }
     });
-
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// --- EPISODE LIST (NEW RELEASES) ---
+// --- EPISODES LIST (Updated for Image Consistency) ---
 router.get('/episodes', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = ITEMS_PER_PAGE;
     const skip = (page - 1) * limit;
 
-    const [episodes, totalCount] = await Promise.all([
-      Episode.find()
-        .sort({ updatedAt: -1 }) 
-        .skip(skip)
-        .limit(limit)
-        .lean(),
+    const [episodesRaw, totalCount] = await Promise.all([
+      Episode.find().sort({ updatedAt: -1 }).skip(skip).limit(limit).lean(),
       Episode.countDocuments()
     ]);
 
-    // Format data agar seragam dengan frontend
-    const formattedEpisodes = episodes.map(ep => {
-      // Logic sederhana untuk menentukan Quality jika tidak ada di DB
-      // Bisa diambil dari ep.quality atau default ke 'HD'
+    // MANUALLY FETCH ANIME IMAGES (Same logic as Home)
+    const animeSlugs = [...new Set(episodesRaw.map(ep => ep.animeSlug).filter(Boolean))];
+    const animeImages = await Anime.find({ pageSlug: { $in: animeSlugs } })
+      .select('pageSlug imageUrl')
+      .lean();
+    
+    const imageMap = {};
+    animeImages.forEach(a => { imageMap[a.pageSlug] = a.imageUrl; });
+
+    const formattedEpisodes = episodesRaw.map(ep => {
+      const finalImageUrl = imageMap[ep.animeSlug] || ep.animeImageUrl || '/images/default.jpg';
       const quality = ep.quality || 'HD'; 
-      
-      // Ambil tahun dari tanggal update/create
       const dateObj = new Date(ep.updatedAt || ep.createdAt);
       const year = dateObj.getFullYear();
 
       return {
         title: ep.title,
         watchUrl: `/watch${ep.episodeSlug}`,
-        imageUrl: ep.animeImageUrl || '/images/default.jpg',
+        imageUrl: finalImageUrl,
         animeTitle: ep.animeTitle,
         releasedAt: ep.updatedAt || ep.createdAt,
-        // UPDATE: Tambahkan field quality dan year untuk Badge Frontend
         quality: quality,
         year: year
       };
