@@ -324,9 +324,7 @@ router.get('/proxy', async (req, res) => {
   try {
     const targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send("No URL provided");
-
-    const myBackendUrl = `${req.protocol}://${req.get('host')}/api/proxy?url=`;
-
+    const myBackendUrl = `https://${req.get('host')}/api/proxy?url=`;
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
       'Referer': 'https://saitou.my.id/', 
