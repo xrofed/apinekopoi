@@ -77,28 +77,21 @@ router.get('/home', async (req, res) => {
     ]);
 
     // MANUALLY FETCH ANIME IMAGES based on animeSlug
-    // 1. Get list of unique animeSlugs from the episodes
     const animeSlugs = [...new Set(episodesRaw.map(ep => ep.animeSlug).filter(Boolean))];
-    
-    // 2. Fetch only the imageUrls for those slugs
     const animeImages = await Anime.find({ pageSlug: { $in: animeSlugs } })
       .select('pageSlug imageUrl')
       .lean();
 
-    // 3. Create a map for quick lookup: { "slug": "imageUrl" }
     const imageMap = {};
     animeImages.forEach(a => { imageMap[a.pageSlug] = a.imageUrl; });
 
-    // 4. Map episodes merging data
     const formattedEpisodes = episodesRaw.map(ep => {
-        // Prioritize image from the Anime model lookup, fall back to episode's animeImageUrl
         const finalImageUrl = imageMap[ep.animeSlug] || ep.animeImageUrl || '/images/default.jpg';
-        
         return {
           watchUrl: `/watch${ep.episodeSlug}`, 
           title: ep.title,
           imageUrl: finalImageUrl,
-          quality: '720p', // Default placeholder
+          quality: '720p',
           year: new Date(ep.updatedAt || ep.createdAt).getFullYear().toString(),
           createdAt: ep.updatedAt || ep.createdAt
         };
@@ -238,6 +231,11 @@ router.get('/watch/:slug', async (req, res) => {
 
     if (parentAnime) {
       Anime.updateOne({ _id: parentAnime._id }, { $inc: { viewCount: 1 } }, { timestamps: false }).exec().catch(() => {});
+      
+      // [FIX] Sort Episode Berdasarkan Angka (episode_index)
+      if (parentAnime.episodes && Array.isArray(parentAnime.episodes)) {
+        parentAnime.episodes.sort((a, b) => b.episode_index - a.episode_index);
+      }
     }
 
     if (episodeData.streaming) {
@@ -302,6 +300,11 @@ router.get('/anime/:slug', async (req, res) => {
 
     Anime.updateOne({ pageSlug }, { $inc: { viewCount: 1 } }, { timestamps: false }).exec().catch(() => {});
 
+    // [FIX] Sort Episode Berdasarkan Angka (episode_index)
+    if (animeData.episodes && Array.isArray(animeData.episodes)) {
+        animeData.episodes.sort((a, b) => b.episode_index - a.episode_index);
+    }
+
     animeData.episodes = animeData.episodes?.map(ep => ({ 
       ...ep, 
       watchUrl: `/watch${ep.url}`
@@ -319,12 +322,15 @@ router.get('/anime/:slug', async (req, res) => {
   }
 });
 
-// --- PROXY ---
+// --- PROXY ROUTE (FIXED HTTPS) ---
 router.get('/proxy', async (req, res) => {
   try {
     const targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send("No URL provided");
+    
+    // [FIX] HARDCODE HTTPS untuk mencegah Mixed Content Error di browser
     const myBackendUrl = `https://${req.get('host')}/api/proxy?url=`;
+    
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
       'Referer': 'https://saitou.my.id/', 
@@ -352,6 +358,7 @@ router.get('/proxy', async (req, res) => {
       let m3u8Content = '';
       response.data.on('data', (chunk) => { m3u8Content += chunk; });
       response.data.on('end', () => {
+        // Rewrite semua link internal di m3u8 menjadi HTTPS Proxy kita
         const rewrittenContent = m3u8Content.replace(
           /(https?:\/\/[^\s]+)/g, 
           (match) => `${myBackendUrl}${encodeURIComponent(match)}`
@@ -427,7 +434,7 @@ router.get('/animes', async (req, res) => {
   }
 });
 
-// --- EPISODES LIST (Updated for Image Consistency) ---
+// --- EPISODES LIST ---
 router.get('/episodes', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -439,7 +446,6 @@ router.get('/episodes', async (req, res) => {
       Episode.countDocuments()
     ]);
 
-    // MANUALLY FETCH ANIME IMAGES (Same logic as Home)
     const animeSlugs = [...new Set(episodesRaw.map(ep => ep.animeSlug).filter(Boolean))];
     const animeImages = await Anime.find({ pageSlug: { $in: animeSlugs } })
       .select('pageSlug imageUrl')

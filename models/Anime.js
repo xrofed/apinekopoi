@@ -19,12 +19,13 @@ const animeSchema = new mongoose.Schema({
 
   genres: [String],
   
-  // PERBAIKAN: Menggunakan 'url' agar sesuai dengan query API
   episodes: [{
-    url: String,        // ex: /kegareboshi-episode-1
-    title: String,      // ex: Kegareboshi Episode 1
-    date: String,       // ex: January 2, 2026
-    episodeNum: Number
+    url: String,
+    title: String,
+    date: String,
+    // --- UPDATE DI SINI ---
+    // Pastikan scraper kamu mengisi field ini dengan angka
+    episode_index: { type: Number, default: 0 } 
   }],
 
   viewCount: { type: Number, default: 0, index: true }
