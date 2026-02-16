@@ -6,3 +6,13 @@ urls_series.txt
 .env
 public/images/
 migrate_episodes.js
+google_indexer.js
+chek_title.js
+indexed_history.json
+service_account.json
+clean_db.js
+convert_love.js
+episode_indux.js
+fix_link.js
+fix_specific_anime.js
+hls.js

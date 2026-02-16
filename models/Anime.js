@@ -19,12 +19,13 @@ const animeSchema = new mongoose.Schema({
 
   genres: [String],
   
+  // Update struktur episodes di sini
   episodes: [{
     url: String,
     title: String,
     date: String,
-    // --- UPDATE DI SINI ---
-    // Pastikan scraper kamu mengisi field ini dengan angka
+    episodeNum: Number,
+    // --- TAMBAHAN PENTING ---
     episode_index: { type: Number, default: 0 } 
   }],
 
