@@ -1,6 +1,7 @@
 node_modules
+public/images/
 master_scraper.js
-scraper_list.
+scraper_list.js
 upload.js
 urls_series.txt
 .env
